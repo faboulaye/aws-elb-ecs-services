@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Container cluster on ECS, loadbalancer, security groups and cloudwatch
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Default: backend
+    Type: String
+
+  Stage:
+    Description: A stage name that will be prefixed to resource names
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - hprod
+
+  TaskFamily:
+    Description: Task family
+    Default: api
+    Type: String
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${Stage}-${EnvironmentName}-cluster
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+        - Key: Stage
+          Value: !Ref Stage
+
+  ECSContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !ImportValue cloudops-vpc-vpcID
+      GroupDescription: for ecs containers
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Stage}-${EnvironmentName}-ecs-task-execution-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ecs-tasks.amazonaws.com]
+            Action: ["sts:AssumeRole"]
+      Path: /
+      Policies:
+        - PolicyName: !Sub ${Stage}-${EnvironmentName}-ecs-task-execution-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: arn:aws:logs:*:*:*
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${Stage}-${EnvironmentName}-lb
+      Subnets:
+        - !ImportValue cloudops-vpc-PrivateSubnet1AppID
+        - !ImportValue cloudops-vpc-PrivateSubnet2AppID
+        - !ImportValue cloudops-vpc-PrivateSubnet3AppID
+      SecurityGroups:
+        - !Ref WebLoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+        - Key: Stage
+          Value: !Ref Stage
+
+  WebLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub ${Stage}-${EnvironmentName}-web-sg
+      GroupDescription: Security Group to apply to the Application Load Balancer
+      VpcId: !ImportValue cloudops-vpc-vpcID
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+      Tags:
+        - Key: Name
+          Value: !Ref EnvironmentName
+        - Key: Stage
+          Value: !Ref Stage
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref DefaultTargetGroup
+
+  DefaultTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-default-tg
+      VpcId: !ImportValue cloudops-vpc-vpcID
+      Port: 80
+      Protocol: HTTP
+
+  ContainerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${TaskFamily}/${EnvironmentName}
+      RetentionInDays: 1
+
+Outputs:
+  Cluster:
+    Value: !Ref ECSCluster
+    Export:
+      Name: app-cluster
+  ECSContainerSecurityGroup:
+    Description: container security group
+    Value: !Ref ECSContainerSecurityGroup
+    Export:
+      Name: ecs-container-sg
+  ECSTaskExecutionRole:
+    Description: ECS Task Execution Role
+    Value: !GetAtt ECSTaskExecutionRole.Arn
+    Export:
+      Name: ecs-task-execution-role-arn
+  LoadBalancerUrl:
+    Description: The URL of the ALB
+    Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: elb-dns-name
+  Listener:
+    Description: A reference to a port 80 listener
+    Value: !Ref LoadBalancerListener
+    Export:
+      Name: elb-http-listener
